@@ -4,19 +4,19 @@
   "deployer": "0x8b563A8c9eeF530300e92E26457D1AB001daEcC7",
   "contracts": {
     "Reputation": {
-      "address": "0x248Ecb1E7Ba72Fe937d8689903DfEB79FB40238f",
-      "tx": "0xe0d7c00f58999a15a70fafe0b7f47b3332c8409cdd3839b0f03c64dd9d72298b",
-      "explorer": "https://genlayer-explorer.vercel.app/address/0x248Ecb1E7Ba72Fe937d8689903DfEB79FB40238f"
+      "address": "0xbb9735ba2F2A6F3f88f716085b04B4C1D6f0bA40",
+      "tx": "0xdb2c8c38e5d2e5a5721d1cdf8646578b0282e08454368c5b625fd2675fb3fcf6",
+      "explorer": "https://genlayer-explorer.vercel.app/address/0xbb9735ba2F2A6F3f88f716085b04B4C1D6f0bA40"
     },
     "AppealCourt": {
-      "address": "0xc800EBDc7d4Ea4309007203Cf14825558A6E74ab",
-      "tx": "0x58c29c4a7b037c00919dda2ae4f39cd32b1347be3e00d5f1e8a6b9b2adec013c",
-      "explorer": "https://genlayer-explorer.vercel.app/address/0xc800EBDc7d4Ea4309007203Cf14825558A6E74ab"
+      "address": "0x815E849a40423EeCa23e15dBF6Ace4DE90d701Db",
+      "tx": "0xa9d18da94035a9769c4a4247d09e3ffc6122a157a6ea6998ac6eeea8a278047a",
+      "explorer": "https://genlayer-explorer.vercel.app/address/0x815E849a40423EeCa23e15dBF6Ace4DE90d701Db"
     },
     "Arena": {
-      "address": "0xd875456f673a7CE6dD2F6DDcdBd2beC751D38Fd1",
-      "tx": "0xe1fdd327636199b31677a6d9dbb2cea24b0f831b7bdc2216a8de398c01bbfcf7",
-      "explorer": "https://genlayer-explorer.vercel.app/address/0xd875456f673a7CE6dD2F6DDcdBd2beC751D38Fd1"
+      "address": "0x2cB09dAb020f6Cb8E0cda650c42403063567664f",
+      "tx": "0xa6ec0dc961dd33dc1fb0d23c2180229758b63c3e2a4b52744e01a2b641983bfb",
+      "explorer": "https://genlayer-explorer.vercel.app/address/0x2cB09dAb020f6Cb8E0cda650c42403063567664f"
     }
   }
 }

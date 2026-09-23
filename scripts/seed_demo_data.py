@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
-"""Seed TruthArena with 3 diverse demo arenas on GenLayer studionet:
+"""Seed TruthArena with diverse demo arenas on GenLayer studionet:
 1. OPEN match (awaiting opponent)
-2. SETTLED match (PRO_WINS with detailed arguments and evidence)
-3. SETTLED match (CON_WINS with detailed arguments and evidence)
+2. FINAL match (PRO_WINS with complete native payout)
+3. FINAL match (CON_WINS with complete native payout)
+4. APPEALED match (Auto-escalated due to low confidence < 60% with AppealCourt case)
 
 Usage:
     source ~/.genlayer/env.sh
@@ -19,6 +20,7 @@ from pathlib import Path
 
 from genlayer_py import create_account, create_client
 from genlayer_py.chains import studionet
+from genlayer_py.types import TransactionStatus
 
 ROOT = Path(__file__).resolve().parent.parent
 DEPLOYMENTS_PATH = ROOT / "deployments.json"
@@ -47,13 +49,15 @@ def main() -> int:
 
     dep = json.loads(DEPLOYMENTS_PATH.read_text())
     arena_addr = dep["contracts"]["Arena"]["address"]
+    appeal_addr = dep["contracts"]["AppealCourt"]["address"]
     account = create_account(key)
     client = create_client(chain=studionet, account=account)
 
     print("==================================================")
     print(f"Seeding TruthArena Demo Data on Studionet")
-    print(f"Arena Address: {arena_addr}")
-    print(f"Admin Account: {account.address}")
+    print(f"Arena Address:       {arena_addr}")
+    print(f"AppealCourt Address: {appeal_addr}")
+    print(f"Admin Account:       {account.address}")
     print("==================================================")
 
     p1 = account.address
@@ -84,31 +88,30 @@ def main() -> int:
             ],
             account=account,
         ))
-        retry_call(lambda: client.wait_for_transaction_receipt(tx1, status="ACCEPTED", interval=3000, retries=30))
+        retry_call(lambda: client.wait_for_transaction_receipt(tx1, status=TransactionStatus.ACCEPTED, interval=3000, retries=30))
         print(f"    Arena 1 created (tx: {tx1})")
 
-    # Add opening argument
-    try:
-        tx1_arg = retry_call(lambda: client.write_contract(
-            address=arena_addr,
-            function_name="admin_add_argument",
-            args=[
-                "1",
-                p1,
-                "Nuclear power provides zero-carbon baseload electricity with the highest capacity factor (>92%) of any energy source, making grid stability without fossil fuels practically achievable.",
-                ["https://ourworldindata.org/nuclear-energy"],
-                1
-            ],
-            account=account,
-        ))
-        retry_call(lambda: client.wait_for_transaction_receipt(tx1_arg, status="ACCEPTED", interval=3000, retries=30))
-    except Exception as e:
-        print(f"    Note on arg 1: {e}")
+        try:
+            tx1_arg = retry_call(lambda: client.write_contract(
+                address=arena_addr,
+                function_name="admin_add_argument",
+                args=[
+                    "1",
+                    p1,
+                    "Nuclear power provides zero-carbon baseload electricity with the highest capacity factor (>92%) of any energy source, making grid stability without fossil fuels practically achievable.",
+                    ["https://ourworldindata.org/nuclear-energy"],
+                    1
+                ],
+                account=account,
+            ))
+            retry_call(lambda: client.wait_for_transaction_receipt(tx1_arg, status=TransactionStatus.ACCEPTED, interval=3000, retries=30))
+        except Exception as e:
+            print(f"    Note on arg 1: {e}")
 
-    # 2. Seed SETTLED PRO_WINS Arena if needed
+    # 2. Seed FINAL PRO_WINS Arena if needed
     cnt_res = retry_call(lambda: client.read_contract(address=arena_addr, function_name="get_arena_count"))
     if int(cnt_res) < 2:
-        print("\n[+] Seeding Arena 2 (SETTLED: PRO_WINS - Autonomous AI Agents)...")
+        print("\n[+] Seeding Arena 2 (FINAL: PRO_WINS - Autonomous AI Agents)...")
         tx2 = retry_call(lambda: client.write_contract(
             address=arena_addr,
             function_name="admin_seed_arena",
@@ -118,17 +121,16 @@ def main() -> int:
                 p1,
                 p2,
                 1000000000000000000,  # 1.0 GEN
-                "SETTLED",
+                "FINAL",
                 "PRO_WINS",
                 "The PRO side provided verifiable empirical benchmarks from modern multi-agent coding systems showing rapid acceleration in complex AST transformations. The CON side relied on skepticism regarding edge cases without countering empirical velocity.",
                 88
             ],
             account=account,
         ))
-        retry_call(lambda: client.wait_for_transaction_receipt(tx2, status="ACCEPTED", interval=3000, retries=30))
+        retry_call(lambda: client.wait_for_transaction_receipt(tx2, status=TransactionStatus.ACCEPTED, interval=3000, retries=30))
         print(f"    Arena 2 created (tx: {tx2})")
 
-        # Arguments for Arena 2
         args_case_2 = [
             (p1, "Empirical developer studies reveal AI assisted tools already generate 40%+ of boilerplate code. Refactoring is fundamentally graph transformation on ASTs, where agentic models excel.", ["https://en.wikipedia.org/wiki/Abstract_syntax_tree"], 1),
             (p2, "Enterprise software relies on legacy domain knowledge and undocumented architectural constraints that generic LLMs hallucinate on, making autonomous commits too risky for core banking and medical infra.", ["https://en.wikipedia.org/wiki/Legacy_system"], 1),
@@ -144,15 +146,15 @@ def main() -> int:
                     args=["2", submitter, text, urls, rnd],
                     account=account,
                 ))
-                retry_call(lambda: client.wait_for_transaction_receipt(tx_a, status="ACCEPTED", interval=2000, retries=30))
+                retry_call(lambda: client.wait_for_transaction_receipt(tx_a, status=TransactionStatus.ACCEPTED, interval=2000, retries=30))
             except Exception:
                 pass
         print("    Added arguments for Arena 2.")
 
-    # 3. Seed SETTLED CON_WINS Arena if needed
+    # 3. Seed FINAL CON_WINS Arena if needed
     cnt_res = retry_call(lambda: client.read_contract(address=arena_addr, function_name="get_arena_count"))
     if int(cnt_res) < 3:
-        print("\n[+] Seeding Arena 3 (SETTLED: CON_WINS - Zero Knowledge Prover Scaling)...")
+        print("\n[+] Seeding Arena 3 (FINAL: CON_WINS - Zero Knowledge Prover Scaling)...")
         tx3 = retry_call(lambda: client.write_contract(
             address=arena_addr,
             function_name="admin_seed_arena",
@@ -162,14 +164,14 @@ def main() -> int:
                 p2,
                 p3,
                 2000000000000000000,  # 2.0 GEN
-                "SETTLED",
+                "FINAL",
                 "CON_WINS",
                 "CON convincingly demonstrated with current ASIC and FPGA prover latency curves that proving Ethereum L1 execution at scale within 12 months entails prohibitive cost and hardware scarcity barriers that Optimistic fraud proofs currently avoid.",
                 84
             ],
             account=account,
         ))
-        retry_call(lambda: client.wait_for_transaction_receipt(tx3, status="ACCEPTED", interval=3000, retries=30))
+        retry_call(lambda: client.wait_for_transaction_receipt(tx3, status=TransactionStatus.ACCEPTED, interval=3000, retries=30))
         print(f"    Arena 3 created (tx: {tx3})")
 
         args_case_3 = [
@@ -187,10 +189,65 @@ def main() -> int:
                     args=["3", submitter, text, urls, rnd],
                     account=account,
                 ))
-                retry_call(lambda: client.wait_for_transaction_receipt(tx_b, status="ACCEPTED", interval=2000, retries=30))
+                retry_call(lambda: client.wait_for_transaction_receipt(tx_b, status=TransactionStatus.ACCEPTED, interval=2000, retries=30))
             except Exception:
                 pass
         print("    Added arguments for Arena 3.")
+
+    # 4. Seed APPEALED Arena (Low-confidence AI consensus < 60%)
+    cnt_res = retry_call(lambda: client.read_contract(address=arena_addr, function_name="get_arena_count"))
+    if int(cnt_res) < 4:
+        print("\n[+] Seeding Arena 4 (APPEALED: Low Confidence auto-escalation)...")
+        tx4 = retry_call(lambda: client.write_contract(
+            address=arena_addr,
+            function_name="admin_seed_arena",
+            args=[
+                "AGI models will autonomously achieve self-directed recursive improvement before 2029.",
+                ["https://en.wikipedia.org/wiki/Artificial_general_intelligence"],
+                p1,
+                p2,
+                1500000000000000000,  # 1.5 GEN
+                "APPEALED",
+                "DRAW",
+                "Low confidence (52%). The jury was split on recursive self-improvement definitions. Auto-escalated for appellate scrutiny.",
+                52
+            ],
+            account=account,
+        ))
+        retry_call(lambda: client.wait_for_transaction_receipt(tx4, status=TransactionStatus.ACCEPTED, interval=3000, retries=30))
+        print(f"    Arena 4 created (tx: {tx4})")
+
+        args_case_4 = [
+            (p1, "Frontier models are already writing their own training synthetic data and optimizing codebases.", ["https://en.wikipedia.org/wiki/Synthetic_data"], 1),
+            (p2, "Diminishing marginal returns on compute and model collapse on self-generated data prevent runaway recursive loops.", ["https://en.wikipedia.org/wiki/Model_collapse"], 1),
+        ]
+        for submitter, text, urls, rnd in args_case_4:
+            time.sleep(1)
+            try:
+                tx_c = retry_call(lambda: client.write_contract(
+                    address=arena_addr,
+                    function_name="admin_add_argument",
+                    args=["4", submitter, text, urls, rnd],
+                    account=account,
+                ))
+                retry_call(lambda: client.wait_for_transaction_receipt(tx_c, status=TransactionStatus.ACCEPTED, interval=2000, retries=30))
+            except Exception:
+                pass
+        print("    Added arguments for Arena 4.")
+
+        # Also trigger auto-appeal in AppealCourt for Arena 4
+        try:
+            print("    Triggering auto-appeal in AppealCourt for Arena 4...")
+            tx_app = retry_call(lambda: client.write_contract(
+                address=appeal_addr,
+                function_name="file_auto_appeal",
+                args=["4"],
+                account=account,
+            ))
+            retry_call(lambda: client.wait_for_transaction_receipt(tx_app, status=TransactionStatus.ACCEPTED, interval=3000, retries=30))
+            print(f"    Appeal recorded in AppealCourt (tx: {tx_app})")
+        except Exception as e:
+            print(f"    Note on auto-appeal: {e}")
 
     final_cnt = retry_call(lambda: client.read_contract(address=arena_addr, function_name="get_arena_count"))
     print("\n==================================================")

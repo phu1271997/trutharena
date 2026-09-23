@@ -193,6 +193,16 @@ VITE_CHAIN_ID=61999
     )
     print(f"[v] Updated {frontend_env}")
 
+    # Write frontend/src/lib/addresses.ts fallback constants
+    addr_ts = ROOT / "frontend" / "src" / "lib" / "addresses.ts"
+    addr_content = f"""export const ARENA_CONTRACT = (import.meta.env.VITE_ARENA_CONTRACT || '{arena_addr}') as `0x${{string}}`;
+export const APPEAL_CONTRACT = (import.meta.env.VITE_APPEAL_CONTRACT || '{appeal_addr}') as `0x${{string}}`;
+export const REPUTATION_CONTRACT = (import.meta.env.VITE_REPUTATION_CONTRACT || '{rep_addr}') as `0x${{string}}`;
+export const RPC_URL = import.meta.env.VITE_STUDIO_RPC || 'https://studio.genlayer.com/api';
+"""
+    addr_ts.write_text(addr_content)
+    print(f"[v] Updated {addr_ts}")
+
     print("\n==================================================")
     print("DEPLOYMENT COMPLETE!")
     print(f"Arena:        {arena_addr}")

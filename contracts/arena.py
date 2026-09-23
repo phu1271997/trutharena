@@ -28,6 +28,25 @@ def _now_epoch() -> bigint:
         return bigint(0)
 
 
+@gl.contract_interface
+class IAppealCourt:
+    class View:
+        def get_appeal(self, appeal_id: str) -> str: ...
+        def get_appeal_count(self) -> u256: ...
+
+    class Write:
+        def file_auto_appeal(self, arena_id: str) -> str: ...
+
+
+@gl.contract_interface
+class IReputation:
+    class View:
+        def get_reputation(self, debater: str) -> str: ...
+
+    class Write:
+        def record_result(self, debater: str, outcome: str) -> None: ...
+
+
 @allow_storage
 @dataclass
 class Argument:
@@ -54,6 +73,7 @@ class ArenaCase:
     confidence: u8
     reputation_contract: str
     appeal_contract: str
+    payout_done: bool
 
 
 class Arena(gl.Contract):
@@ -119,6 +139,7 @@ class Arena(gl.Contract):
             confidence=u8(0),
             reputation_contract=_addr_str(self.reputation_contract),
             appeal_contract=_addr_str(self.appeal_contract),
+            payout_done=False,
         )
         self.arenas[arena_id_str] = case
         return arena_id_str
@@ -235,30 +256,61 @@ class Arena(gl.Contract):
             for a in args_snapshot:
                 for url in a.evidence_urls:
                     try:
-                        body = gl.nondet.web.render(url, mode="text")
+                        res = gl.nondet.web.get(url)
+                        body = (
+                            res.body.decode("utf-8", errors="replace")
+                            if hasattr(res, "body")
+                            else str(res)
+                        )
                         fetched.append(
                             {
                                 "url": url,
                                 "submitter": a.submitter,
                                 "round": int(a.round_number),
-                                "content": body[:4000],
+                                "content": body[:3000],
                             }
                         )
-                    except Exception as e:
-                        fetched.append({"url": url, "error": str(e)[:200]})
+                    except Exception:
+                        try:
+                            body = gl.nondet.web.render(url, mode="text")
+                            fetched.append(
+                                {
+                                    "url": url,
+                                    "submitter": a.submitter,
+                                    "round": int(a.round_number),
+                                    "content": body[:3000],
+                                }
+                            )
+                        except Exception as e:
+                            fetched.append({"url": url, "error": str(e)[:200]})
 
             for url in ctx_snapshot:
                 try:
-                    body = gl.nondet.web.render(url, mode="text")
+                    res = gl.nondet.web.get(url)
+                    body = (
+                        res.body.decode("utf-8", errors="replace")
+                        if hasattr(res, "body")
+                        else str(res)
+                    )
                     fetched.append(
                         {
                             "url": url,
                             "submitter": "context",
-                            "content": body[:4000],
+                            "content": body[:3000],
                         }
                     )
-                except Exception as e:
-                    fetched.append({"url": url, "error": str(e)[:200]})
+                except Exception:
+                    try:
+                        body = gl.nondet.web.render(url, mode="text")
+                        fetched.append(
+                            {
+                                "url": url,
+                                "submitter": "context",
+                                "content": body[:3000],
+                            }
+                        )
+                    except Exception as e:
+                        fetched.append({"url": url, "error": str(e)[:200]})
 
             pro_args = [
                 a
@@ -303,18 +355,35 @@ RESPOND WITH ONLY VALID JSON:
 
         def validator_fn(leader_res) -> bool:
             """
-            CRITICAL CONSENSUS RULE: Validator compares VERDICT (semantic meaning),
-            ignoring stylistic variations in the generated reason text.
+            CRITICAL CONSENSUS RULE: Validator compares VERDICT (semantic meaning)
+            AND confidence tier (selecting settlement vs appeal threshold at 60%).
             """
             if not isinstance(leader_res, gl.vm.Return):
                 return False
             leader = leader_res.calldata
-            if not isinstance(leader, dict) or "verdict" not in leader:
+            if not isinstance(leader, dict) or "verdict" not in leader or "confidence" not in leader:
                 return False
             mine = leader_fn()
-            if not isinstance(mine, dict) or "verdict" not in mine:
+            if not isinstance(mine, dict) or "verdict" not in mine or "confidence" not in mine:
                 return False
-            return mine["verdict"] == leader["verdict"]
+
+            # 1. Semantic verdict must agree
+            if mine["verdict"] != leader["verdict"]:
+                return False
+
+            # 2. Both must agree on the threshold selecting settlement vs appeal (confidence >= 60)
+            mine_conf = int(mine["confidence"])
+            leader_conf = int(leader["confidence"])
+            mine_settles = mine_conf >= 60
+            leader_settles = leader_conf >= 60
+            if mine_settles != leader_settles:
+                return False
+
+            # 3. Numeric confidence scores must be in close agreement (tolerance <= 15)
+            if abs(mine_conf - leader_conf) > 15:
+                return False
+
+            return True
 
         result = _run_nondet(leader_fn, validator_fn)
         verdict = str(result.get("verdict", "DRAW")).upper()
@@ -324,79 +393,193 @@ RESPOND WITH ONLY VALID JSON:
         reason = str(result.get("reason", ""))
         confidence = int(result.get("confidence", 70))
 
+        # Low confidence (< 60%) auto-escalates to AppealCourt without distributing escrow
         if confidence < 60:
             case.state = "APPEALED"
             case.verdict = verdict
             case.reason = f"Low confidence ({confidence}%). Auto-escalated for appellate review. {reason}"
             case.confidence = u8(max(0, min(100, confidence)))
+            case.payout_done = False
+
+            if self.appeal_contract:
+                try:
+                    ac = IAppealCourt(self.appeal_contract)
+                    ac.emit(on="accepted").file_auto_appeal(arena_id)
+                except Exception:
+                    pass
             return
 
         case.verdict = verdict
         case.reason = reason
         case.confidence = u8(max(0, min(100, confidence)))
         case.state = "SETTLED"
+        case.payout_done = False
+
+        # Settle stakes: arena reaches FINAL only if required native payouts succeed!
         self._settle_stakes(arena_id, verdict)
 
-    def _settle_stakes(self, arena_id: str, verdict: str) -> None:
+    def _settle_stakes(self, arena_id: str, verdict: str) -> bool:
+        """
+        Fail-safe settlement: transfers native GEN payouts.
+        The arena reaches state 'FINAL' ONLY after the required payouts succeed.
+        If any payout transfer fails, the arena remains in 'SETTLED' state so it can be retried.
+        """
         case = self.arenas[arena_id]
         pool = case.stake_per_side * bigint(2)
         fee = pool * bigint(5) // bigint(100)
         payout = pool - fee
 
+        payout_success = False
+
         if verdict == "PRO_WINS":
-            try:
-                gl.get_contract_at(Address(case.pro_wallet)).emit_transfer(
-                    value=u256(int(payout))
-                )
-            except Exception:
-                pass
             winner = case.pro_wallet
             loser = case.con_wallet
-        elif verdict == "CON_WINS":
             try:
-                gl.get_contract_at(Address(case.con_wallet)).emit_transfer(
+                gl.get_contract_at(Address(winner)).emit_transfer(
                     value=u256(int(payout))
                 )
+                payout_success = True
             except Exception:
-                pass
+                payout_success = False
+
+        elif verdict == "CON_WINS":
             winner = case.con_wallet
             loser = case.pro_wallet
-        else:
+            try:
+                gl.get_contract_at(Address(winner)).emit_transfer(
+                    value=u256(int(payout))
+                )
+                payout_success = True
+            except Exception:
+                payout_success = False
+
+        else:  # DRAW
+            winner = ""
+            loser = ""
             half_payout = (case.stake_per_side * bigint(95)) // bigint(100)
             try:
                 gl.get_contract_at(Address(case.pro_wallet)).emit_transfer(
                     value=u256(int(half_payout))
                 )
-            except Exception:
-                pass
-            try:
                 gl.get_contract_at(Address(case.con_wallet)).emit_transfer(
                     value=u256(int(half_payout))
                 )
+                payout_success = True
+            except Exception:
+                payout_success = False
+
+        if payout_success:
+            case.payout_done = True
+            case.state = "FINAL"
+
+            # Record reputation on final settlement
+            try:
+                if self.reputation_contract:
+                    rep = IReputation(self.reputation_contract)
+                    if winner and loser:
+                        rep.emit(on="finalized").record_result(winner, "WIN")
+                        rep.emit(on="finalized").record_result(loser, "LOSE")
+                    else:
+                        rep.emit(on="finalized").record_result(case.pro_wallet, "DRAW")
+                        rep.emit(on="finalized").record_result(case.con_wallet, "DRAW")
             except Exception:
                 pass
-            winner = ""
-            loser = ""
+            return True
+        else:
+            # Payout did not succeed: remain in SETTLED, do not transition to FINAL
+            case.payout_done = False
+            case.state = "SETTLED"
+            return False
 
-        case.state = "FINAL"
-
-        try:
-            rep = gl.get_contract_at(self.reputation_contract)
-            if winner and loser:
-                rep.record_result(args=[winner, "WIN"])
-                rep.record_result(args=[loser, "LOSE"])
-            else:
-                rep.record_result(args=[case.pro_wallet, "DRAW"])
-                rep.record_result(args=[case.con_wallet, "DRAW"])
-        except Exception:
-            pass
-
-    @gl.public.write.payable
-    def request_appeal(self, arena_id: str) -> None:
+    @gl.public.write
+    def claim_payout(self, arena_id: str) -> None:
+        """Retry / claim settlement payout for an arena in SETTLED state."""
         if arena_id not in self.arenas:
             raise gl.vm.UserError("Arena not found")
         case = self.arenas[arena_id]
-        if case.state != "SETTLED" and case.state != "FINAL":
+        if case.state != "SETTLED":
+            raise gl.vm.UserError("Arena is not in SETTLED state awaiting payout")
+        if case.payout_done:
+            raise gl.vm.UserError("Payout already completed")
+
+        success = self._settle_stakes(arena_id, case.verdict)
+        if not success:
+            raise gl.vm.UserError("Payout transfer failed")
+
+    @gl.public.write
+    def mark_appealed(self, arena_id: str) -> None:
+        """Hook called by AppealCourt to mark arena as APPEALED upon valid appeal."""
+        sender_str = _addr_str(gl.message.sender_address)
+        is_appeal = sender_str.lower() == _addr_str(self.appeal_contract).lower()
+        if not is_appeal and gl.message.sender_address != self.admin:
+            raise gl.vm.UserError("Only AppealCourt can mark arena as appealed")
+
+        if arena_id not in self.arenas:
+            raise gl.vm.UserError("Arena not found")
+        case = self.arenas[arena_id]
+        if case.state not in ["SETTLED", "FINAL", "LOCKED", "JUDGING"]:
+            raise gl.vm.UserError("Cannot appeal arena in this state")
+
+        case.state = "APPEALED"
+
+    @gl.public.write
+    def settle_from_appeal(
+        self,
+        arena_id: str,
+        appellate_verdict: str,
+        appellate_reason: str,
+        appellate_confidence: int,
+        appellant: str,
+    ) -> None:
+        """
+        Appellate result hook: updates the original case verdict, reason, confidence,
+        and triggers escrow payout settlement. Reaches FINAL only after payout succeeds.
+        """
+        sender_str = _addr_str(gl.message.sender_address)
+        is_appeal = sender_str.lower() == _addr_str(self.appeal_contract).lower()
+        if not is_appeal and gl.message.sender_address != self.admin:
+            raise gl.vm.UserError("Only AppealCourt can settle appeal")
+
+        if arena_id not in self.arenas:
+            raise gl.vm.UserError("Arena not found")
+
+        case = self.arenas[arena_id]
+        if case.state not in ["APPEALED", "SETTLED"]:
+            raise gl.vm.UserError("Arena is not in an appealed state")
+
+        app_v = appellate_verdict.upper().strip()
+        if app_v not in ["UPHOLD", "OVERTURN"]:
+            raise gl.vm.UserError("Invalid appellate verdict")
+
+        prior_verdict = case.verdict
+        if app_v == "UPHOLD":
+            final_verdict = prior_verdict
+            case.reason = f"{case.reason} | [AppealCourt UPHOLD]: {appellate_reason}"
+        else:
+            if prior_verdict == "PRO_WINS":
+                final_verdict = "CON_WINS"
+            elif prior_verdict == "CON_WINS":
+                final_verdict = "PRO_WINS"
+            else:
+                final_verdict = "PRO_WINS" if appellant.lower() == case.pro_wallet.lower() else "CON_WINS"
+
+            case.verdict = final_verdict
+            case.reason = f"[AppealCourt OVERTURN]: {appellate_reason}"
+
+        case.confidence = u8(max(0, min(100, appellate_confidence)))
+        case.state = "SETTLED"
+        case.payout_done = False
+
+        # Execute safe escrow payout to the upheld / overturned winner
+        self._settle_stakes(arena_id, final_verdict)
+
+    @gl.public.write.payable
+    def request_appeal(self, arena_id: str) -> None:
+        """Manual appeal requested on the Arena contract by the defeated debater."""
+        if arena_id not in self.arenas:
+            raise gl.vm.UserError("Arena not found")
+        case = self.arenas[arena_id]
+        if case.state not in ["SETTLED", "FINAL"]:
             raise gl.vm.UserError("Only settled arenas can be appealed")
 
         required_stake = case.stake_per_side * bigint(2)
@@ -439,23 +622,24 @@ RESPOND WITH ONLY VALID JSON:
             con_wallet=con_wallet,
             stake_per_side=bigint(stake),
             state=state,
-            current_round=u8(3 if state in ["SETTLED", "FINAL"] else 1),
+            current_round=u8(3 if state in ["SETTLED", "FINAL", "APPEALED"] else 1),
             verdict=verdict,
             reason=reason,
             confidence=u8(confidence),
             reputation_contract=_addr_str(self.reputation_contract),
             appeal_contract=_addr_str(self.appeal_contract),
+            payout_done=(state == "FINAL"),
         )
         self.arenas[arena_id_str] = case
 
         # Update reputation for settled seeded cases
-        if verdict in ["PRO_WINS", "CON_WINS"] and self.reputation_contract:
+        if verdict in ["PRO_WINS", "CON_WINS"] and self.reputation_contract and state == "FINAL":
             try:
-                rep = gl.get_contract_at(self.reputation_contract)
+                rep = IReputation(self.reputation_contract)
                 w = pro_wallet if verdict == "PRO_WINS" else con_wallet
                 l = con_wallet if verdict == "PRO_WINS" else pro_wallet
-                rep.record_result(args=[w, "WIN"])
-                rep.record_result(args=[l, "LOSE"])
+                rep.emit(on="finalized").record_result(w, "WIN")
+                rep.emit(on="finalized").record_result(l, "LOSE")
             except Exception:
                 pass
 
@@ -522,6 +706,7 @@ RESPOND WITH ONLY VALID JSON:
             "confidence": int(c.confidence),
             "reputation_contract": c.reputation_contract,
             "appeal_contract": c.appeal_contract,
+            "payout_done": c.payout_done,
             "arguments": args_data,
         }
         return json.dumps(data)
@@ -573,6 +758,7 @@ RESPOND WITH ONLY VALID JSON:
                             "current_round": int(c.current_round),
                             "verdict": c.verdict,
                             "confidence": int(c.confidence),
+                            "payout_done": c.payout_done,
                         }
                     )
         return json.dumps(results)

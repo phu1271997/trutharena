@@ -62,9 +62,26 @@ TruthArena employs a modular 3-contract architecture deployed on GenLayer studio
 
 | Contract | Address | Explorer Link |
 |---|---|---|
-| **Arena** | `0xd875456f673a7CE6dD2F6DDcdBd2beC751D38Fd1` | [View on Explorer](https://genlayer-explorer.vercel.app/address/0xd875456f673a7CE6dD2F6DDcdBd2beC751D38Fd1) |
-| **AppealCourt** | `0xc800EBDc7d4Ea4309007203Cf14825558A6E74ab` | [View on Explorer](https://genlayer-explorer.vercel.app/address/0xc800EBDc7d4Ea4309007203Cf14825558A6E74ab) |
-| **Reputation** | `0x248Ecb1E7Ba72Fe937d8689903DfEB79FB40238f` | [View on Explorer](https://genlayer-explorer.vercel.app/address/0x248Ecb1E7Ba72Fe937d8689903DfEB79FB40238f) |
+| **Arena** | `0x2cB09dAb020f6Cb8E0cda650c42403063567664f` | [View on Explorer](https://genlayer-explorer.vercel.app/address/0x2cB09dAb020f6Cb8E0cda650c42403063567664f) |
+| **AppealCourt** | `0x815E849a40423EeCa23e15dBF6Ace4DE90d701Db` | [View on Explorer](https://genlayer-explorer.vercel.app/address/0x815E849a40423EeCa23e15dBF6Ace4DE90d701Db) |
+| **Reputation** | `0xbb9735ba2F2A6F3f88f716085b04B4C1D6f0bA40` | [View on Explorer](https://genlayer-explorer.vercel.app/address/0xbb9735ba2F2A6F3f88f716085b04B4C1D6f0bA40) |
+
+---
+
+## 4.1 Value-Bearing & Appellate Workflow (Judge Feedback Implementation)
+
+1. **Fail-Safe Native Settlement**:
+   - An arena reaches state `FINAL` only after native GEN payout transfers succeed.
+   - If a transfer fails or needs retry, the arena remains in `SETTLED` state, allowing callers to execute `claim_payout(arena_id)`.
+2. **Authenticated Appellate Workflow**:
+   - `AppealCourt.file_appeal` pulls verified match state directly from `Arena` on-chain—preventing caller-supplied facts.
+   - Only the authenticated defeated debater (`con_wallet` if `PRO_WINS`, `pro_wallet` if `CON_WINS`) can appeal with 2x stake deposit.
+   - Low jury confidence (< 60%) automatically escalates via `file_auto_appeal`, locking escrow until appellate review.
+   - Appellate rulings (`UPHOLD` / `OVERTURN`) update the original arena verdict, reason, and confidence, and trigger escrow settlement.
+3. **Consensus Confidence Agreement**:
+   - `validator_fn` in both `Arena` and `AppealCourt` enforces semantic verdict equality AND agreement on the confidence threshold (`>= 60` selecting settlement vs appeal) plus numerical proximity (`<= 15`).
+4. **Interactive Appellate UI**:
+   - Frontend includes an "Appellate Court" navigation tab with live auto-escalated and defeated-party appeals, in-context 2x stake appeal modal, and payout claim button.
 
 ---
 
